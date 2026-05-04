@@ -14,9 +14,21 @@ Offline-capable **TF–IDF** product search: TypeScript SDK (`sdk/`) and a **Nex
 
 1. Push this repo to GitHub (default branch `main`).
 2. Open [vercel.com/new](https://vercel.com/new) → **Import** the **Semantic-Search** repository.
-3. **Critical:** under **Root Directory**, click **Edit** and set it to **`web`** (not the repo root). Framework should stay **Next.js**.
-4. **Build & Install** — leave defaults (`npm run build` / `npm install`). The `web` app’s `prebuild` script compiles the sibling `sdk/` package automatically.
-5. **Deploy.** Open the production URL (e.g. `https://<project>.vercel.app`). Use **Load demo catalog** for an instant smoke test; large CSV uploads may hit serverless time/size limits on free tiers.
+3. **Critical — Root Directory:** on the import screen (or later under **Settings → General → Build & Deployment**), set **Root Directory** to **`web`**. Do **not** leave it empty or `/`. This repo’s Next.js app and `package.json` live under `web/`; the repo root has **no** Next app, so the wrong root produces failed or “empty” deployments.
+4. **Framework** should stay **Next.js**. **Build & Install** — leave defaults (`npm run build` / `npm install`). The `web` app’s `prebuild` script compiles the sibling `sdk/` package automatically.
+5. **Deploy**, wait until the deployment is **Ready**. Open the **Production** URL from the **Deployments** page (the deployment marked **Production** / current).
+
+### Vercel shows `404 NOT_FOUND` (white page, `Code: NOT_FOUND`)
+
+That response means the **hostname is not attached to a successful deployment** (see [Vercel: NOT_FOUND](https://vercel.com/docs/errors/not_found)). Typical causes:
+
+| Cause | What to do |
+|--------|------------|
+| **Root Directory** was not set to **`web`** | Fix it in **Settings → General**, then **Redeploy** the latest commit. |
+| You opened an old **preview** URL (often contains a random word such as `ivory` in the subdomain) | Use the **Production** domain shown on the project overview (e.g. `https://semantic-search-<team>.vercel.app`), not a one-off preview link from an older deployment. |
+| Latest deployment **failed** or was **canceled** | Open **Deployments →** select the failed build → **Build Logs** and fix the error (missing env, install failure, etc.). |
+
+After changing **Root Directory**, you must trigger a **new deployment** (Redeploy or push a commit); old deployment URLs may keep returning NOT_FOUND.
 
 Optional env (in Vercel → Project → Settings → Environment Variables):
 
