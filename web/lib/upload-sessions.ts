@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { appendFile, stat, unlink, writeFile } from "fs/promises";
+import { appendFile, mkdir, readdir, readFile, stat, unlink, writeFile } from "fs/promises";
 import path from "path";
 import os from "os";
 
@@ -13,20 +13,46 @@ export type UploadSession = {
   createdAt: number;
 };
 
-const sessions = new Map<string, UploadSession>();
-
+/** All chunk state lives on disk so it survives dev HMR and single-node restarts (in-memory Map did not). */
+const SESSION_DIR = path.join(os.tmpdir(), "semantic-search-uploads");
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 
+function metaPath(uploadId: string): string {
+  return path.join(SESSION_DIR, `${uploadId}.meta.json`);
+}
+
+function dataPath(uploadId: string): string {
+  return path.join(SESSION_DIR, `${uploadId}.part`);
+}
+
+async function readSession(uploadId: string): Promise<UploadSession | undefined> {
+  try {
+    const raw = await readFile(metaPath(uploadId), "utf8");
+    return JSON.parse(raw) as UploadSession;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeSession(uploadId: string, session: UploadSession): Promise<void> {
+  await writeFile(metaPath(uploadId), JSON.stringify(session), "utf8");
+}
+
 async function gcStaleSessions(): Promise<void> {
+  let names: string[];
+  try {
+    names = await readdir(SESSION_DIR);
+  } catch {
+    return;
+  }
   const now = Date.now();
-  for (const [id, s] of sessions) {
+  for (const name of names) {
+    if (!name.endsWith(".meta.json")) continue;
+    const uploadId = name.replace(/\.meta\.json$/i, "");
+    const s = await readSession(uploadId);
+    if (!s) continue;
     if (now - s.createdAt < SESSION_TTL_MS) continue;
-    sessions.delete(id);
-    try {
-      await unlink(s.filePath);
-    } catch {
-      /* ignore */
-    }
+    await removeSession(uploadId);
   }
 }
 
@@ -35,11 +61,12 @@ export async function createUploadSession(
   totalBytes: number,
   totalChunks: number
 ): Promise<{ uploadId: string }> {
+  await mkdir(SESSION_DIR, { recursive: true });
   await gcStaleSessions();
   const uploadId = randomUUID();
-  const filePath = path.join(os.tmpdir(), `semantic-search-${uploadId}.upload`);
+  const filePath = dataPath(uploadId);
   await writeFile(filePath, Buffer.alloc(0));
-  sessions.set(uploadId, {
+  const session: UploadSession = {
     filePath,
     nextChunkIndex: 0,
     totalChunks,
@@ -47,16 +74,22 @@ export async function createUploadSession(
     bytesWritten: 0,
     filename,
     createdAt: Date.now()
-  });
+  };
+  await writeSession(uploadId, session);
   return { uploadId };
 }
 
-export function getSession(uploadId: string): UploadSession | undefined {
-  return sessions.get(uploadId);
-}
-
-export function removeSession(uploadId: string): void {
-  sessions.delete(uploadId);
+export async function removeSession(uploadId: string): Promise<void> {
+  try {
+    await unlink(metaPath(uploadId));
+  } catch {
+    /* ignore */
+  }
+  try {
+    await unlink(dataPath(uploadId));
+  } catch {
+    /* ignore */
+  }
 }
 
 export async function appendChunk(
@@ -64,8 +97,14 @@ export async function appendChunk(
   chunkIndex: number,
   data: Buffer
 ): Promise<{ ok: true; received: number; nextChunk: number } | { ok: false; error: string }> {
-  const s = sessions.get(uploadId);
-  if (!s) return { ok: false, error: "Unknown or expired upload session. Start upload again." };
+  const s = await readSession(uploadId);
+  if (!s) {
+    return {
+      ok: false,
+      error:
+        "Unknown or expired upload session. If you are on Vercel, large files need BLOB_READ_WRITE_TOKEN (see README) or run the app locally."
+    };
+  }
   if (chunkIndex !== s.nextChunkIndex) {
     return {
       ok: false,
@@ -76,29 +115,42 @@ export async function appendChunk(
     return { ok: false, error: "Chunk index out of range." };
   }
   await appendFile(s.filePath, data);
-  s.bytesWritten += data.length;
-  s.nextChunkIndex += 1;
-  return { ok: true, received: data.length, nextChunk: s.nextChunkIndex };
+  const next: UploadSession = {
+    ...s,
+    bytesWritten: s.bytesWritten + data.length,
+    nextChunkIndex: s.nextChunkIndex + 1
+  };
+  await writeSession(uploadId, next);
+  return { ok: true, received: data.length, nextChunk: next.nextChunkIndex };
 }
 
-export async function verifyUploadComplete(uploadId: string): Promise<
-  | { ok: true; session: UploadSession }
-  | { ok: false; error: string }
-> {
-  const s = sessions.get(uploadId);
-  if (!s) return { ok: false, error: "Unknown or expired upload session." };
+export async function verifyUploadComplete(
+  uploadId: string
+): Promise<{ ok: true; session: UploadSession } | { ok: false; error: string }> {
+  const s = await readSession(uploadId);
+  if (!s) {
+    return {
+      ok: false,
+      error:
+        "Unknown or expired upload session. If you are on Vercel, use Blob storage for large uploads or run locally."
+    };
+  }
   if (s.nextChunkIndex !== s.totalChunks) {
     return {
       ok: false,
       error: `Upload incomplete (${s.nextChunkIndex}/${s.totalChunks} chunks).`
     };
   }
-  const st = await stat(s.filePath);
-  if (st.size !== s.totalBytes) {
-    return {
-      ok: false,
-      error: `Size mismatch (disk ${st.size} vs declared ${s.totalBytes}). Re-upload.`
-    };
+  try {
+    const st = await stat(s.filePath);
+    if (st.size !== s.totalBytes) {
+      return {
+        ok: false,
+        error: `Size mismatch (disk ${st.size} vs declared ${s.totalBytes}). Re-upload.`
+      };
+    }
+  } catch {
+    return { ok: false, error: "Upload file missing on server. Re-upload." };
   }
   return { ok: true, session: s };
 }

@@ -207,6 +207,13 @@ input:focus {
   margin-top: 0.75rem;
 }
 
+.panel code {
+  font-size: 0.8rem;
+  background: var(--bg);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+}
+
 .status-line strong {
   color: var(--fg);
 }

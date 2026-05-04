@@ -108,6 +108,45 @@ export default function HomePage() {
     return `Indexed ${j.indexed ?? 0} rows.`;
   };
 
+  /** Large files on Vercel: direct client → Blob, then server indexes from the Blob URL (same project). */
+  const uploadBlobThenIndex = async (file: File) => {
+    setUploadPhase("Uploading to Vercel Blob…");
+    const { upload } = await import("@vercel/blob/client");
+    const handleUploadUrl = new URL("/api/ingest/blob", window.location.origin).toString();
+    const blob = await upload(file.name, file, {
+      access: "public",
+      handleUploadUrl
+    });
+    setUploadPhase("Indexing from Blob…");
+    const idx = await fetch("/api/ingest/from-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: blob.url, filename: file.name })
+    });
+    const j = (await idx.json()) as { ok?: boolean; indexed?: number; warning?: string; error?: string };
+    if (!idx.ok) throw new Error(j.error || "Indexing failed after Blob upload.");
+    let msg = `Indexed ${j.indexed ?? 0} rows.`;
+    if (j.warning) msg += ` ${j.warning}`;
+    return msg;
+  };
+
+  const pickUploadStrategy = async (file: File): Promise<string> => {
+    if (file.size <= MAX_SINGLE_UPLOAD_BYTES) {
+      return uploadSmall(file);
+    }
+    const capRes = await fetch("/api/ingest/capabilities");
+    const cap = (await capRes.json()) as { vercel?: boolean; blob?: boolean };
+    if (cap.blob) {
+      return uploadBlobThenIndex(file);
+    }
+    if (cap.vercel && !cap.blob) {
+      throw new Error(
+        "Files over 4MB on Vercel need Vercel Blob: open your project → Storage → Create Blob store → link it (sets BLOB_READ_WRITE_TOKEN), redeploy, then upload again. Alternatively run `npm run dev` on your PC for chunked upload without Blob."
+      );
+    }
+    return uploadChunked(file);
+  };
+
   const loadSafeDemo = async () => {
     setError(null);
     setMessage(null);
@@ -144,8 +183,7 @@ export default function HomePage() {
     }
     setUploading(true);
     try {
-      const msg =
-        file.size > MAX_SINGLE_UPLOAD_BYTES ? await uploadChunked(file) : await uploadSmall(file);
+      const msg = await pickUploadStrategy(file);
       setMessage(msg);
       setUploadPhase(null);
       setPipeline(null);
@@ -245,6 +283,12 @@ export default function HomePage() {
 
       <section className="panel">
         <h2>1 · Connect your data</h2>
+        <p className="status-line" style={{ marginBottom: "1rem" }}>
+          Small files (≤ 4MB) upload in one request. Larger files use{" "}
+          <strong>chunked upload</strong> on your machine, or <strong>Vercel Blob</strong> when{" "}
+          <code>BLOB_READ_WRITE_TOKEN</code> is set on Vercel (otherwise multi-part upload cannot find a session between
+          serverless invocations).
+        </p>
         <div className="row-actions">
           <button type="button" className="btn btn-secondary" onClick={() => void loadSafeDemo()} disabled={uploading}>
             Load demo catalog

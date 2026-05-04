@@ -24,22 +24,27 @@ Optional env (in Vercel → Project → Settings → Environment Variables):
 
 `web/vercel.json` sets **up to 300s** for the large ingest **complete** route; on **Hobby** plans Vercel may cap lower (upgrade to **Pro** for long-running indexing, or index huge CSVs locally).
 
+### Large uploads on Vercel (fixes “Unknown or expired upload session”)
+
+Chunked upload stores session metadata in `/tmp`, but **each serverless invocation can run on a different machine**, so `init` → `chunk` → `complete` often **lose the session**. Fix:
+
+1. In Vercel: **Storage → Blob** → create a store and **connect** it to this project (adds **`BLOB_READ_WRITE_TOKEN`** automatically).
+2. Redeploy. Files **over 4MB** will upload **directly to Blob** from the browser, then the app calls **`/api/ingest/from-url`** to download and index (no cross-invocation session).
+
+Without Blob, use **`npm run dev`** locally for large CSVs, or keep files under **4MB** for single `POST /api/ingest`.
+
 ## Public “weblink” for your manager
 
 1. **Quick demo:** After the Vercel steps above, open your `.vercel.app` URL and use **Load demo catalog**, then search.
 2. **Real large CSV:** Vercel has **tight time and memory limits**; multi‑GB indexing is often not realistic there. For huge files, run `npm run dev` locally (with more heap if needed) or use a VM you control—not a public git push of the CSV.
 
-## Troubleshooting: `Cannot find module './611.js'`
+## Troubleshooting: `Cannot find module './331.js'` / `./611.js`
 
-That usually means a **stale or mismatched** `.next` folder (often after moving the repo or changing `next.config`). From the `web` folder run:
+**Cause:** If this app sits inside a bigger repo that has its own `package-lock.json`, Next.js 15 can infer the **wrong workspace root**. The server bundle then loads chunks with the wrong path (`./331.js` instead of `./chunks/331.js`) and `next start` / Vercel crash with `MODULE_NOT_FOUND`.
 
-```bash
-npm run clean
-npm install
-npm run dev
-```
+**Fix:** `web/next.config.ts` sets `outputFileTracingRoot` to **`path.resolve(__dirname)`** (this app directory only—not `..` to `semantic-search/`). After any config change, from `web/` run `npm run clean && npm run build`.
 
-On Windows PowerShell you can use `npm run dev:clean` (clean + dev). Always use **Root Directory = `web`** on Vercel so `outputFileTracingRoot` matches this repo layout.
+Stale `.next` can cause similar errors; use `npm run dev:clean` on Windows or `npm run clean` then dev/build. On Vercel, set **Root Directory = `web`** so builds run from this app folder.
 
 ## Local run
 

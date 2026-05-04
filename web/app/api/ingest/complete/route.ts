@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { indexFromUploadedFile } from "@/lib/ingest-file";
 import { enqueueIngest } from "@/lib/ingest-queue";
 import { getEngine } from "@/lib/engine-store";
-import { deleteUploadFile, removeSession, verifyUploadComplete } from "@/lib/upload-sessions";
+import { removeSession, verifyUploadComplete } from "@/lib/upload-sessions";
 
 export const runtime = "nodejs";
 export const maxDuration = 3600;
@@ -36,8 +36,7 @@ export async function POST(req: Request) {
       const engine = getEngine();
       return indexFromUploadedFile(filePath, filename, engine);
     });
-    removeSession(uploadId);
-    await deleteUploadFile(filePath);
+    await removeSession(uploadId);
     return NextResponse.json({
       ok: true,
       indexed: summary.indexed,
@@ -45,8 +44,7 @@ export async function POST(req: Request) {
       warning: summary.warning
     });
   } catch (e) {
-    removeSession(uploadId);
-    await deleteUploadFile(filePath);
+    await removeSession(uploadId);
     const message = e instanceof Error ? e.message : "Indexing failed";
     return NextResponse.json({ error: message }, { status: 400 });
   }

@@ -4,6 +4,12 @@
   "functions": {
     "app/api/ingest/complete/route.ts": {
       "maxDuration": 300
+    },
+    "app/api/ingest/from-url/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/ingest/blob/route.ts": {
+      "maxDuration": 60
     }
   }
 }
