@@ -24,6 +24,16 @@ function blobToken(): string | undefined {
   return process.env.BLOB_READ_WRITE_TOKEN;
 }
 
+/**
+ * The Blob store on this project is configured with private access. v2 of
+ * `@vercel/blob` requires `access` to match the store; we only set it
+ * conditionally so this also works on public stores.
+ */
+function snapshotAccess(): "public" | "private" {
+  const v = (process.env.BLOB_STORE_ACCESS || "private").toLowerCase();
+  return v === "public" ? "public" : "private";
+}
+
 export async function saveSnapshotToBlob(documents: IndexedDocument[]): Promise<string | null> {
   const token = blobToken();
   if (!token) return null;
@@ -34,7 +44,7 @@ export async function saveSnapshotToBlob(documents: IndexedDocument[]): Promise<
   };
   const body = JSON.stringify(payload);
   const r = await put(SNAPSHOT_PATHNAME, body, {
-    access: "public",
+    access: snapshotAccess(),
     contentType: "application/json",
     token,
     allowOverwrite: true,
@@ -71,7 +81,9 @@ export async function hydrateEngineFromBlob(): Promise<number> {
         g.__semanticSearchHydrated = true;
         return 0;
       }
-      const res = await fetch(url, { cache: "no-store" });
+      // Private store URLs require Authorization on direct fetch.
+      const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+      const res = await fetch(url, { cache: "no-store", headers });
       if (!res.ok) {
         g.__semanticSearchHydrated = true;
         return 0;
