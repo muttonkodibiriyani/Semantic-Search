@@ -10,6 +10,9 @@ type Hit = {
   score: number;
   label?: string;
   snippet?: string;
+  primaryImage?: string;
+  productUrl?: string;
+  styleCode?: string;
   meta: Record<string, string>;
 };
 
@@ -245,23 +248,46 @@ export default function HomePage() {
           <h2 style={{ fontSize: "1rem", margin: "0 0 0.75rem" }}>Results</h2>
           <ul className="results">
             {results.map((r, idx) => (
-              <li key={`${r.id}-${idx}`}>
-                <strong>{r.label || r.id}</strong>
-                <span className="idmuted"> ({r.id})</span>
-                <span className="score"> · score {r.score.toFixed(4)}</span>
-                {r.snippet ? <div className="snippet">{r.snippet}</div> : null}
-                {Object.keys(r.meta).length > 0 && (
-                  <div className="meta">
-                    {Object.entries(r.meta)
-                      .slice(0, 8)
-                      .map(([k, v]) => (
-                        <span key={k}>
-                          {k}: {v.length > 120 ? `${v.slice(0, 120)}…` : v}
-                          {" · "}
-                        </span>
-                      ))}
-                  </div>
-                )}
+              <li key={`${r.id}-${idx}`} className="result-row">
+                {r.primaryImage || r.meta?.primaryImage ? (
+                  <img
+                    className="thumb"
+                    src={r.primaryImage || r.meta.primaryImage}
+                    alt=""
+                    width={80}
+                    height={80}
+                    loading="lazy"
+                  />
+                ) : null}
+                <div className="result-body">
+                  <strong>{r.label || r.id}</strong>
+                  <span className="idmuted"> · SKU {r.id}</span>
+                  {r.styleCode || r.meta?.parentStyleCode ? (
+                    <span className="idmuted"> · Style {r.styleCode || r.meta.parentStyleCode}</span>
+                  ) : null}
+                  <span className="score"> · score {r.score.toFixed(4)}</span>
+                  {(r.productUrl || r.meta?.productUrl) && (
+                    <div>
+                      <a href={r.productUrl || r.meta.productUrl} target="_blank" rel="noopener noreferrer">
+                        Open PDP (slug demo)
+                      </a>
+                    </div>
+                  )}
+                  {r.snippet ? <div className="snippet">{r.snippet}</div> : null}
+                  {Object.keys(r.meta).length > 0 && (
+                    <div className="meta">
+                      {Object.entries(r.meta)
+                        .filter(([k]) => !["primaryImage", "secondaryImages", "imageCount"].includes(k))
+                        .slice(0, 8)
+                        .map(([k, v]) => (
+                          <span key={k}>
+                            {k}: {v.length > 120 ? `${v.slice(0, 120)}…` : v}
+                            {" · "}
+                          </span>
+                        ))}
+                    </div>
+                  )}
+                </div>
               </li>
             ))}
           </ul>

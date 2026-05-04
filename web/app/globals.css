@@ -100,9 +100,27 @@ ul.results {
   margin: 0;
 }
 
+ul.results li.result-row {
+  display: flex;
+  gap: 0.85rem;
+  align-items: flex-start;
+}
+
 ul.results li {
   padding: 0.75rem 0;
   border-bottom: 1px solid var(--border);
+}
+
+ul.results .result-body {
+  flex: 1;
+  min-width: 0;
+}
+
+img.thumb {
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
 ul.results li:last-child {

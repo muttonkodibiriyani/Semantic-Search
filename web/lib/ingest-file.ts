@@ -37,6 +37,9 @@ async function indexCsvStream(
       skip_empty_lines: true,
       trim: true,
       bom: true,
+      quote: '"',
+      escape: '"',
+      relax_quotes: true,
       delimiter: delimiterForFilename(filename)
     })
   );

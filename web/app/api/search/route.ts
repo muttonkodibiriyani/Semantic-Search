@@ -16,13 +16,15 @@ export async function GET(req: Request) {
     results: hits.map((h) => {
       const meta = h.document.meta ?? {};
       const label =
+        meta.Name ||
         meta.name ||
         meta.title ||
         meta.product ||
         meta.product_name ||
-        meta.Name ||
         h.document.id;
       const snippet =
+        meta["Long Description"] ||
+        meta["Long description"] ||
         meta.description ||
         meta.desc ||
         meta.details ||
@@ -33,6 +35,9 @@ export async function GET(req: Request) {
         score: h.score,
         label,
         snippet: snippet.slice(0, 280),
+        primaryImage: meta.primaryImage,
+        productUrl: meta.productUrl,
+        styleCode: meta.parentStyleCode || meta["Style Code"],
         meta
       };
     })
