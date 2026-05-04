@@ -5,7 +5,7 @@ import { getEngine } from "@/lib/engine-store";
 import { removeSession, verifyUploadComplete } from "@/lib/upload-sessions";
 
 export const runtime = "nodejs";
-export const maxDuration = 3600;
+export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
 type Body = { uploadId?: string };
