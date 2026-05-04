@@ -16,18 +16,33 @@ type Hit = {
   meta: Record<string, string>;
 };
 
+type Pipeline = {
+  query: string;
+  queryTokens: string[];
+  indexedDocuments: number;
+  stages: { key: string; label: string; detail: string }[];
+};
+
 export default function HomePage() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Hit[]>([]);
+  const [pipeline, setPipeline] = useState<Pipeline | null>(null);
   const [docCount, setDocCount] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [uploadPhase, setUploadPhase] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const refreshStats = useCallback(async () => {
-    const res = await fetch("/api/stats");
-    const j = (await res.json()) as { documents: number };
-    setDocCount(j.documents);
+    try {
+      const res = await fetch("/api/stats");
+      if (!res.ok) return;
+      const j = (await res.json()) as { documents: number };
+      setDocCount(j.documents);
+    } catch {
+      setDocCount(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -44,9 +59,7 @@ export default function HomePage() {
       body: JSON.stringify({ filename: file.name, totalBytes, totalChunks })
     });
     const initJson = (await initRes.json()) as { uploadId?: string; error?: string };
-    if (!initRes.ok) {
-      throw new Error(initJson.error || "Could not start upload.");
-    }
+    if (!initRes.ok) throw new Error(initJson.error || "Could not start upload.");
     const uploadId = initJson.uploadId;
     if (!uploadId) throw new Error("Server did not return uploadId.");
 
@@ -58,19 +71,14 @@ export default function HomePage() {
       setUploadPhase(`Uploading part ${i + 1} / ${totalChunks}…`);
       const chunkRes = await fetch("/api/ingest/chunk", {
         method: "POST",
-        headers: {
-          "x-upload-id": uploadId,
-          "x-chunk-index": String(i)
-        },
+        headers: { "x-upload-id": uploadId, "x-chunk-index": String(i) },
         body: buf
       });
       const chunkJson = (await chunkRes.json()) as { error?: string };
-      if (!chunkRes.ok) {
-        throw new Error(chunkJson.error || `Chunk ${i} failed.`);
-      }
+      if (!chunkRes.ok) throw new Error(chunkJson.error || `Chunk ${i} failed.`);
     }
 
-    setUploadPhase("Indexing on server (this can take several minutes for huge files)…");
+    setUploadPhase("Indexing on server (large files can take several minutes)…");
     const doneRes = await fetch("/api/ingest/complete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -80,12 +88,9 @@ export default function HomePage() {
       ok?: boolean;
       indexed?: number;
       warning?: string;
-      truncated?: boolean;
       error?: string;
     };
-    if (!doneRes.ok) {
-      throw new Error(doneJson.error || "Indexing failed after upload.");
-    }
+    if (!doneRes.ok) throw new Error(doneJson.error || "Indexing failed after upload.");
     let msg = `Indexed ${doneJson.indexed ?? 0} rows.`;
     if (doneJson.warning) msg += ` ${doneJson.warning}`;
     return msg;
@@ -98,25 +103,28 @@ export default function HomePage() {
     const j = (await res.json()) as { ok?: boolean; indexed?: number; error?: string; useChunked?: boolean };
     if (!res.ok) {
       if (j.useChunked) throw new Error(j.error || "Use chunked upload.");
-      throw new Error(j.error || "Upload failed.");
+      throw new Error(j.error || `Upload failed (${res.status}).`);
     }
     return `Indexed ${j.indexed ?? 0} rows.`;
   };
 
   const loadSafeDemo = async () => {
+    setError(null);
     setMessage(null);
     setUploadPhase(null);
     setUploading(true);
     try {
       const res = await fetch("/demo/sample-products.csv");
-      if (!res.ok) throw new Error("Demo file missing from deployment.");
+      if (!res.ok) throw new Error("Demo file missing from this build.");
       const blob = await res.blob();
       const file = new File([blob], "sample-products.csv", { type: "text/csv" });
       const msg = await uploadSmall(file);
-      setMessage(`${msg} (synthetic demo only — not your proprietary data.)`);
+      setMessage(`${msg} Synthetic demo only.`);
+      setPipeline(null);
+      setResults([]);
       await refreshStats();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Could not load demo.");
+      setError(err instanceof Error ? err.message : "Could not load demo.");
     } finally {
       setUploading(false);
     }
@@ -124,13 +132,14 @@ export default function HomePage() {
 
   const onUpload = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    setError(null);
     setMessage(null);
     setUploadPhase(null);
     const form = e.currentTarget;
     const input = form.elements.namedItem("file") as HTMLInputElement;
     const file = input?.files?.[0];
     if (!file) {
-      setMessage("Choose a .csv, .tsv, .json, or .jsonl file first.");
+      setError("Choose a .csv, .tsv, .json, or .jsonl file first.");
       return;
     }
     setUploading(true);
@@ -139,10 +148,12 @@ export default function HomePage() {
         file.size > MAX_SINGLE_UPLOAD_BYTES ? await uploadChunked(file) : await uploadSmall(file);
       setMessage(msg);
       setUploadPhase(null);
+      setPipeline(null);
+      setResults([]);
       await refreshStats();
     } catch (err) {
       setUploadPhase(null);
-      setMessage(err instanceof Error ? err.message : "Upload failed.");
+      setError(err instanceof Error ? err.message : "Upload failed.");
     } finally {
       setUploading(false);
     }
@@ -150,102 +161,163 @@ export default function HomePage() {
 
   const onSearch = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError(null);
     setMessage(null);
     const q = query.trim();
     if (!q) {
       setResults([]);
+      setPipeline(null);
       return;
     }
-    const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
-    const j = (await res.json()) as { results: Hit[] };
-    setResults(j.results || []);
-    if (!j.results?.length) {
-      setMessage("No matches (try other words, or confirm the catalog finished indexing).");
+    setSearching(true);
+    try {
+      const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+      let j: { results?: Hit[]; pipeline?: Pipeline; error?: string };
+      try {
+        j = (await res.json()) as typeof j;
+      } catch {
+        throw new Error("Invalid response from search API.");
+      }
+      if (!res.ok) throw new Error(j.error || `Search failed (${res.status}).`);
+      setResults(j.results || []);
+      setPipeline(j.pipeline ?? null);
+      if (!j.results?.length) {
+        setMessage("No matches — try different words or upload/index again.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Search request failed.");
+      setResults([]);
+      setPipeline(null);
+    } finally {
+      setSearching(false);
     }
   };
 
   return (
-    <main>
-      <h1>Semantic product search</h1>
-      <p className="lead">
-        Open this app at <strong>http://127.0.0.1:3200</strong> (run <code>npm run dev</code> from the{" "}
-        <code>semantic-search/web</code> folder). Large files (hundreds of MB) upload in parts, then stream into the
-        index — no single 900MB request.
-      </p>
-
-      <section className="tips">
-        <strong>Tips for huge catalogs</strong>
-        <ul>
-          <li>
-            Prefer <strong>CSV</strong> or <strong>JSON Lines (.jsonl)</strong> — one JSON object per line. A single
-            giant <code>.json</code> array over ~80MB is rejected (convert to .jsonl).
-          </li>
-          <li>
-            If Node runs out of memory while indexing, restart dev with more heap, for example:{" "}
-            <code>set NODE_OPTIONS=--max-old-space-size=16384</code> then <code>npm run dev</code> (PowerShell:{" "}
-            <code>$env:NODE_OPTIONS=&quot;--max-old-space-size=16384&quot;</code>).
-          </li>
-          <li>
-            Optional cap: set env <code>SEMANTIC_SEARCH_MAX_ROWS</code> to limit rows (useful for testing).
-          </li>
-        </ul>
-      </section>
-
-      <section>
-        <p className="lead" style={{ marginBottom: "0.75rem" }}>
-          <button type="button" className="secondary" onClick={() => void loadSafeDemo()} disabled={uploading}>
-            Load safe demo catalog
-          </button>{" "}
-          <span className="demohint">Tiny public sample for manager demos — no upload of your file.</span>
+    <div className="app">
+      <header className="hero">
+        <p className="kicker">How it works</p>
+        <h1>Semantic catalog search</h1>
+        <p className="hero-sub">
+          Connect your product data, build a lexical index, search in natural language across English and Arabic
+          fields, and inspect the five-stage retrieval pipeline on every query.
         </p>
-        <form onSubmit={onUpload}>
-          <label htmlFor="file">Catalog file (.csv, .tsv, .json, .jsonl)</label>
-          <input
-            id="file"
-            name="file"
-            type="file"
-            accept=".csv,.tsv,.json,.jsonl,.ndjson,text/csv,application/json"
-          />
-          <button type="submit" disabled={uploading}>
-            {uploading ? "Working…" : "Upload & index"}
+      </header>
+
+      <div className="steps-grid">
+        <article className="step-card" data-step="01">
+          <div className="step-card-inner">
+            <div className="step-icon" style={{ background: "#ecfdf5", color: "#059669" }}>
+              ◉
+            </div>
+            <h3>Connect your data</h3>
+            <p>Upload CSV / JSONL exports (PIM fields like SKU, style, descriptions, image URLs).</p>
+          </div>
+        </article>
+        <article className="step-card" data-step="02">
+          <div className="step-card-inner">
+            <div className="step-icon" style={{ background: "#f5f3ff", color: "#7c3aed" }}>
+              ⚡
+            </div>
+            <h3>Lexical index</h3>
+            <p>TF–IDF vectors capture term importance across your catalog (offline — no paid embedding API).</p>
+          </div>
+        </article>
+        <article className="step-card" data-step="03">
+          <div className="step-card-inner">
+            <div className="step-icon" style={{ background: "#eff6ff", color: "#2563eb" }}>
+              ◎
+            </div>
+            <h3>Search by meaning</h3>
+            <p>Same ideas, different wording: cosine similarity + light keyword boost on titles and copy.</p>
+          </div>
+        </article>
+        <article className="step-card" data-step="04">
+          <div className="step-card-inner">
+            <div className="step-icon" style={{ background: "#fff7ed", color: "#ea580c" }}>
+              ✦
+            </div>
+            <h3>Ranked results</h3>
+            <p>Products ordered by relevance with images, SKU, style, and optional PDP-style links.</p>
+          </div>
+        </article>
+      </div>
+
+      <section className="panel">
+        <h2>1 · Connect your data</h2>
+        <div className="row-actions">
+          <button type="button" className="btn btn-secondary" onClick={() => void loadSafeDemo()} disabled={uploading}>
+            Load demo catalog
           </button>
-          <p className="status">
-            Indexed documents: {docCount === null ? "…" : docCount}
+        </div>
+        <form onSubmit={onUpload}>
+          <label className="field" htmlFor="file">
+            Catalog file (.csv, .tsv, .json, .jsonl)
+          </label>
+          <input id="file" name="file" type="file" accept=".csv,.tsv,.json,.jsonl,.ndjson,text/csv,application/json" />
+          <button type="submit" className="btn btn-primary" disabled={uploading} style={{ marginTop: "0.75rem" }}>
+            {uploading ? "Indexing…" : "Upload & build index"}
+          </button>
+          <div className="status-line">
+            <strong>Indexed rows:</strong> {docCount === null ? "—" : docCount}
             {uploadPhase ? (
               <>
                 <br />
-                <span className="phase">{uploadPhase}</span>
+                {uploadPhase}
               </>
             ) : null}
-            {message ? (
-              <>
-                <br />
-                <span className="msg">{message}</span>
-              </>
-            ) : null}
-          </p>
+          </div>
+          {message ? <p className="msg-ok">{message}</p> : null}
+          {error ? <p className="msg-error">{error}</p> : null}
         </form>
       </section>
 
-      <section>
+      <section className="panel">
+        <h2>3 · Search by meaning</h2>
         <form onSubmit={onSearch}>
-          <label htmlFor="q">Search</label>
-          <input
-            id="q"
-            name="q"
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="e.g. waterproof backpack bluetooth"
-            autoComplete="off"
-          />
-          <button type="submit">Search</button>
+          <label className="field" htmlFor="q">
+            Query
+          </label>
+          <div className="search-row">
+            <input
+              id="q"
+              name="q"
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="e.g. stoneware vase · شمعدان · double breasted blazer"
+              autoComplete="off"
+            />
+            <button type="submit" className="btn btn-primary" disabled={searching}>
+              {searching ? (
+                <>
+                  <span className="spinner" aria-hidden /> Searching…
+                </>
+              ) : (
+                "Search"
+              )}
+            </button>
+          </div>
         </form>
+
+        {pipeline && (query.trim() || pipeline.indexedDocuments > 0) ? (
+          <div className="pipeline">
+            <h3>Retrieval pipeline (5 stages)</h3>
+            <ol>
+              {pipeline.stages.map((s) => (
+                <li key={s.key}>
+                  <strong>{s.label}</strong>
+                  <span>{s.detail}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        ) : null}
       </section>
 
       {results.length > 0 && (
-        <section>
-          <h2 style={{ fontSize: "1rem", margin: "0 0 0.75rem" }}>Results</h2>
+        <section className="panel">
+          <h2>4 · Results</h2>
           <ul className="results">
             {results.map((r, idx) => (
               <li key={`${r.id}-${idx}`} className="result-row">
@@ -260,15 +332,15 @@ export default function HomePage() {
                   />
                 ) : null}
                 <div className="result-body">
-                  <strong>{r.label || r.id}</strong>
-                  <span className="idmuted"> · SKU {r.id}</span>
+                  <div className="title">{r.label || r.id}</div>
+                  <span className="idmuted">SKU {r.id}</span>
                   {r.styleCode || r.meta?.parentStyleCode ? (
                     <span className="idmuted"> · Style {r.styleCode || r.meta.parentStyleCode}</span>
                   ) : null}
                   <span className="score"> · score {r.score.toFixed(4)}</span>
                   {(r.productUrl || r.meta?.productUrl) && (
                     <div>
-                      <a href={r.productUrl || r.meta.productUrl} target="_blank" rel="noopener noreferrer">
+                      <a className="pdp" href={r.productUrl || r.meta.productUrl} target="_blank" rel="noopener noreferrer">
                         Open PDP (slug demo)
                       </a>
                     </div>
@@ -277,11 +349,11 @@ export default function HomePage() {
                   {Object.keys(r.meta).length > 0 && (
                     <div className="meta">
                       {Object.entries(r.meta)
-                        .filter(([k]) => !["primaryImage", "secondaryImages", "imageCount"].includes(k))
-                        .slice(0, 8)
+                        .filter(([k]) => !["primaryImage", "secondaryImages", "imageCount", "productUrl"].includes(k))
+                        .slice(0, 6)
                         .map(([k, v]) => (
                           <span key={k}>
-                            {k}: {v.length > 120 ? `${v.slice(0, 120)}…` : v}
+                            {k}: {v.length > 100 ? `${v.slice(0, 100)}…` : v}
                             {" · "}
                           </span>
                         ))}
@@ -293,6 +365,13 @@ export default function HomePage() {
           </ul>
         </section>
       )}
-    </main>
+
+      <p className="disclaimer">
+        <strong>Note:</strong> This demo uses on-device TF–IDF (lexical “semantic” similarity). Hosted platforms like
+        Denser add neural embeddings and a vector database; that path is an upgrade when APIs and budget are
+        available. Arabic and English text are both tokenized after a recent fix — re-upload your CSV if search was
+        empty before.
+      </p>
+    </div>
   );
 }
