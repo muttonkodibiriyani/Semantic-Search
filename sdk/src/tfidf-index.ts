@@ -47,6 +47,11 @@ export class TfidfIndex {
     return this.documents.length;
   }
 
+  /** Read-only snapshot of indexed documents (used for index persistence). */
+  getDocuments(): IndexedDocument[] {
+    return this.documents;
+  }
+
   build(): void {
     const N = this.documents.length;
     if (N === 0) {

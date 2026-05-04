@@ -13,7 +13,7 @@
     "start": "next start -p 3200"
   },
   "dependencies": {
-    "@vercel/blob": "^0.27.3",
+    "@vercel/blob": "^2.3.3",
     "csv-parse": "^5.6.0",
     "next": "^15.0.3",
     "react": "^18.3.1",

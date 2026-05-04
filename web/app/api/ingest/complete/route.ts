@@ -3,6 +3,7 @@ import { indexFromUploadedFile } from "@/lib/ingest-file";
 import { enqueueIngest } from "@/lib/ingest-queue";
 import { getEngine } from "@/lib/engine-store";
 import { removeSession, verifyUploadComplete } from "@/lib/upload-sessions";
+import { saveSnapshotToBlob, markEngineHydrated } from "@/lib/index-snapshot";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -37,11 +38,22 @@ export async function POST(req: Request) {
       return indexFromUploadedFile(filePath, filename, engine);
     });
     await removeSession(uploadId);
+
+    let extraWarning: string | undefined;
+    try {
+      const engine = getEngine();
+      await saveSnapshotToBlob(engine.getDocuments());
+      markEngineHydrated();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "snapshot failed";
+      extraWarning = `Index built in memory, but persisting snapshot to Blob failed: ${message}.`;
+    }
+
     return NextResponse.json({
       ok: true,
       indexed: summary.indexed,
       truncated: summary.truncated,
-      warning: summary.warning
+      warning: [summary.warning, extraWarning].filter(Boolean).join(" ").trim() || undefined
     });
   } catch (e) {
     await removeSession(uploadId);

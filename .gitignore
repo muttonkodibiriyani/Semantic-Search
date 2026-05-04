@@ -35,3 +35,6 @@ Thumbs.db
 
 # IDE
 .idea/
+
+# TS incremental build state
+**/*.tsbuildinfo

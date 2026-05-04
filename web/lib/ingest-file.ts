@@ -1,6 +1,7 @@
 import { createReadStream } from "fs";
 import { readFile, stat } from "fs/promises";
 import { createInterface } from "readline";
+import type { Readable } from "stream";
 import { parse } from "csv-parse";
 import type { SemanticSearchEngine } from "semantic-search-sdk";
 import { jsonToDocuments, recordToIndexedDocument } from "./ingest";
@@ -9,11 +10,21 @@ const BATCH = 8000;
 /** Single JSON array uploads above this size must use JSON Lines (.jsonl) instead. */
 const MAX_WHOLE_JSON_BYTES = 80 * 1024 * 1024;
 
+/**
+ * Default cap on indexed rows when running on Vercel. TF-IDF in-memory + 300s/Hobby
+ * limits will fail on multi-million-row catalogs. Set SEMANTIC_SEARCH_MAX_ROWS to
+ * override (or to "0"/empty to remove the cap, which is only safe locally).
+ */
+const VERCEL_DEFAULT_MAX_ROWS = 25_000;
+
 function getMaxRows(): number | undefined {
   const v = process.env.SEMANTIC_SEARCH_MAX_ROWS;
-  if (v == null || v === "") return undefined;
+  if (v == null || v === "") {
+    return process.env.VERCEL === "1" ? VERCEL_DEFAULT_MAX_ROWS : undefined;
+  }
   const n = parseInt(v, 10);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return n;
 }
 
 function delimiterForFilename(filename: string): string {
@@ -22,15 +33,14 @@ function delimiterForFilename(filename: string): string {
   return ",";
 }
 
-async function indexCsvStream(
-  filePath: string,
+async function indexCsvFromReadable(
+  source: Readable,
   filename: string,
   engine: SemanticSearchEngine,
   maxRows: number | undefined,
   onProgress?: (indexed: number) => void
 ): Promise<{ indexed: number; truncated: boolean }> {
-  const stream = createReadStream(filePath, { highWaterMark: 1024 * 1024 });
-  const parser = stream.pipe(
+  const parser = source.pipe(
     parse({
       columns: true,
       relax_column_count: true,
@@ -48,23 +58,41 @@ async function indexCsvStream(
   let truncated = false;
   const batch: ReturnType<typeof recordToIndexedDocument>[] = [];
 
-  for await (const row of parser) {
-    if (maxRows != null && indexed >= maxRows) {
-      truncated = true;
-      break;
+  try {
+    for await (const row of parser) {
+      if (maxRows != null && indexed >= maxRows) {
+        truncated = true;
+        break;
+      }
+      const record = row as Record<string, unknown>;
+      batch.push(recordToIndexedDocument(record, indexed + 1));
+      indexed++;
+      if (batch.length >= BATCH) {
+        engine.appendBatch(batch);
+        batch.length = 0;
+        onProgress?.(indexed);
+      }
     }
-    const record = row as Record<string, unknown>;
-    batch.push(recordToIndexedDocument(record, indexed + 1));
-    indexed++;
-    if (batch.length >= BATCH) {
-      engine.appendBatch(batch);
-      batch.length = 0;
-      onProgress?.(indexed);
+  } finally {
+    if (truncated) {
+      // Stop fetching the rest of the (possibly huge) upstream once we hit the cap.
+      source.destroy();
     }
   }
   if (batch.length) engine.appendBatch(batch);
   onProgress?.(indexed);
   return { indexed, truncated };
+}
+
+async function indexCsvStream(
+  filePath: string,
+  filename: string,
+  engine: SemanticSearchEngine,
+  maxRows: number | undefined,
+  onProgress?: (indexed: number) => void
+): Promise<{ indexed: number; truncated: boolean }> {
+  const stream = createReadStream(filePath, { highWaterMark: 1024 * 1024 });
+  return indexCsvFromReadable(stream, filename, engine, maxRows, onProgress);
 }
 
 async function indexJsonlStream(
@@ -109,6 +137,10 @@ async function indexJsonlStream(
   return { indexed, truncated };
 }
 
+function truncatedWarning(maxRows: number | undefined): string {
+  return `Stopped at ${maxRows} rows (SEMANTIC_SEARCH_MAX_ROWS cap; raise it to index more). On Vercel Hobby this is capped to ${VERCEL_DEFAULT_MAX_ROWS} by default to stay within memory and 300s function limits.`;
+}
+
 /**
  * Stream a large uploaded file into the search engine (does not load whole file into RAM).
  */
@@ -131,7 +163,7 @@ export async function indexFromUploadedFile(
       return {
         indexed,
         truncated,
-        warning: truncated ? `Stopped at ${maxRows} rows (SEMANTIC_SEARCH_MAX_ROWS).` : undefined
+        warning: truncated ? truncatedWarning(maxRows) : undefined
       };
     }
 
@@ -151,7 +183,7 @@ export async function indexFromUploadedFile(
         return {
           indexed: slice.length,
           truncated: true,
-          warning: `Stopped at ${maxRows} rows (SEMANTIC_SEARCH_MAX_ROWS).`
+          warning: truncatedWarning(maxRows)
         };
       }
       engine.appendBatch(slice);
@@ -164,7 +196,41 @@ export async function indexFromUploadedFile(
     return {
       indexed,
       truncated,
-      warning: truncated ? `Stopped at ${maxRows} rows (SEMANTIC_SEARCH_MAX_ROWS).` : undefined
+      warning: truncated ? truncatedWarning(maxRows) : undefined
+    };
+  } catch (e) {
+    engine.beginReplace();
+    engine.finalizeReplace();
+    throw e;
+  }
+}
+
+/**
+ * Stream-parse a CSV (or TSV) directly from a Node Readable into the engine,
+ * without ever staging the file on disk. Used for ingesting large blobs on
+ * Vercel where /tmp is too small to hold the upload.
+ */
+export async function indexFromCsvStream(
+  source: Readable,
+  filename: string,
+  engine: SemanticSearchEngine,
+  onProgress?: (indexed: number) => void
+): Promise<{ indexed: number; truncated: boolean; warning?: string }> {
+  const maxRows = getMaxRows();
+  engine.beginReplace();
+  try {
+    const { indexed, truncated } = await indexCsvFromReadable(
+      source,
+      filename,
+      engine,
+      maxRows,
+      onProgress
+    );
+    engine.finalizeReplace();
+    return {
+      indexed,
+      truncated,
+      warning: truncated ? truncatedWarning(maxRows) : undefined
     };
   } catch (e) {
     engine.beginReplace();

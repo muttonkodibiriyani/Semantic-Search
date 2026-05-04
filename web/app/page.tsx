@@ -23,6 +23,13 @@ type Pipeline = {
   stages: { key: string; label: string; detail: string }[];
 };
 
+type ExistingBlob = { pathname: string; size: number; uploadedAt?: string };
+
+function formatMB(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 MB";
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export default function HomePage() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Hit[]>([]);
@@ -33,6 +40,8 @@ export default function HomePage() {
   const [uploadPhase, setUploadPhase] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [existingBlobs, setExistingBlobs] = useState<ExistingBlob[]>([]);
+  const [pickedBlob, setPickedBlob] = useState<string>("");
 
   const refreshStats = useCallback(async () => {
     try {
@@ -45,9 +54,23 @@ export default function HomePage() {
     }
   }, []);
 
+  const refreshExistingBlobs = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ingest/blobs");
+      if (!res.ok) return;
+      const j = (await res.json()) as { blobs?: ExistingBlob[] };
+      const list = j.blobs || [];
+      setExistingBlobs(list);
+      setPickedBlob((prev) => prev || list[0]?.pathname || "");
+    } catch {
+      setExistingBlobs([]);
+    }
+  }, []);
+
   useEffect(() => {
     void refreshStats();
-  }, [refreshStats]);
+    void refreshExistingBlobs();
+  }, [refreshStats, refreshExistingBlobs]);
 
   const uploadChunked = async (file: File) => {
     const totalBytes = file.size;
@@ -145,6 +168,41 @@ export default function HomePage() {
       );
     }
     return uploadChunked(file);
+  };
+
+  const indexExistingBlob = async (pathname: string): Promise<string> => {
+    setUploadPhase(`Streaming "${pathname}" from Vercel Blob and indexing on the server…`);
+    const res = await fetch("/api/ingest/from-blob-pathname", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pathname })
+    });
+    const j = (await res.json()) as { ok?: boolean; indexed?: number; warning?: string; error?: string };
+    if (!res.ok) throw new Error(j.error || "Indexing existing blob failed.");
+    let msg = `Indexed ${j.indexed ?? 0} rows from "${pathname}".`;
+    if (j.warning) msg += ` ${j.warning}`;
+    return msg;
+  };
+
+  const onIndexExisting = async () => {
+    if (!pickedBlob) return;
+    setError(null);
+    setMessage(null);
+    setUploadPhase(null);
+    setUploading(true);
+    try {
+      const msg = await indexExistingBlob(pickedBlob);
+      setMessage(msg);
+      setUploadPhase(null);
+      setPipeline(null);
+      setResults([]);
+      await refreshStats();
+    } catch (err) {
+      setUploadPhase(null);
+      setError(err instanceof Error ? err.message : "Indexing existing blob failed.");
+    } finally {
+      setUploading(false);
+    }
   };
 
   const loadSafeDemo = async () => {
@@ -284,16 +342,66 @@ export default function HomePage() {
       <section className="panel">
         <h2>1 · Connect your data</h2>
         <p className="status-line" style={{ marginBottom: "1rem" }}>
-          Small files (≤ 4MB) upload in one request. Larger files use{" "}
-          <strong>chunked upload</strong> on your machine, or <strong>Vercel Blob</strong> when{" "}
-          <code>BLOB_READ_WRITE_TOKEN</code> is set on Vercel (otherwise multi-part upload cannot find a session between
-          serverless invocations).
+          Small files (≤ 4MB) upload in one request. Larger files go through{" "}
+          <strong>Vercel Blob</strong> (when <code>BLOB_READ_WRITE_TOKEN</code> is set) or{" "}
+          <strong>chunked upload</strong> when running locally. Already-uploaded blobs can be indexed without
+          re-uploading from your browser.
         </p>
         <div className="row-actions">
           <button type="button" className="btn btn-secondary" onClick={() => void loadSafeDemo()} disabled={uploading}>
             Load demo catalog
           </button>
         </div>
+
+        {existingBlobs.length > 0 ? (
+          <div
+            style={{
+              marginTop: "1rem",
+              padding: "0.85rem 1rem",
+              border: "1px solid #e5e7eb",
+              borderRadius: 12,
+              background: "#fafafa"
+            }}
+          >
+            <div style={{ marginBottom: "0.5rem", fontWeight: 600 }}>Index a file already in Vercel Blob</div>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+              <select
+                value={pickedBlob}
+                onChange={(e) => setPickedBlob(e.target.value)}
+                disabled={uploading}
+                style={{ flex: "1 1 320px", minWidth: 240, padding: "0.45rem 0.6rem", borderRadius: 8 }}
+              >
+                {existingBlobs.map((b) => (
+                  <option key={b.pathname} value={b.pathname}>
+                    {b.pathname} — {formatMB(b.size)}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => void onIndexExisting()}
+                disabled={uploading || !pickedBlob}
+              >
+                Index this blob
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => void refreshExistingBlobs()}
+                disabled={uploading}
+              >
+                Refresh list
+              </button>
+            </div>
+            <div className="status-line" style={{ marginTop: "0.5rem", color: "#6b7280" }}>
+              The server streams the blob and builds the index without re-uploading from your machine. On Vercel
+              Hobby the index is capped to <code>SEMANTIC_SEARCH_MAX_ROWS</code> (default 25,000 rows) to fit
+              within memory and 300s function limits — set the env var to raise it.
+            </div>
+          </div>
+        ) : null}
+
         <form onSubmit={onUpload}>
           <label className="field" htmlFor="file">
             Catalog file (.csv, .tsv, .json, .jsonl)

@@ -1,14 +1,9 @@
-import { randomUUID } from "crypto";
-import { createWriteStream } from "fs";
-import { unlink } from "fs/promises";
-import path from "path";
-import os from "os";
 import { Readable } from "stream";
-import { pipeline } from "stream/promises";
 import { NextResponse } from "next/server";
-import { indexFromUploadedFile } from "@/lib/ingest-file";
+import { indexFromCsvStream } from "@/lib/ingest-file";
 import { enqueueIngest } from "@/lib/ingest-queue";
 import { getEngine } from "@/lib/engine-store";
+import { saveSnapshotToBlob, markEngineHydrated } from "@/lib/index-snapshot";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -24,8 +19,19 @@ function assertSafeBlobUrl(urlStr: string): void {
     throw new Error("Invalid URL.");
   }
   const h = u.hostname.toLowerCase();
-  if (!h.endsWith(".blob.vercel-storage.com") && !h.endsWith(".public.blob.vercel-storage.com")) {
+  // `<store>.private.blob.vercel-storage.com` and `<store>.public.blob.vercel-storage.com`
+  // both end with `.blob.vercel-storage.com`, which is the only suffix we accept.
+  if (!h.endsWith(".blob.vercel-storage.com")) {
     throw new Error("Only Vercel Blob URLs are allowed (SSRF protection).");
+  }
+}
+
+function isPrivateBlob(urlStr: string): boolean {
+  try {
+    const u = new URL(urlStr);
+    return u.hostname.toLowerCase().endsWith(".private.blob.vercel-storage.com");
+  } catch {
+    return false;
   }
 }
 
@@ -48,32 +54,72 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: message }, { status: 400 });
   }
 
-  const id = randomUUID();
-  const filePath = path.join(os.tmpdir(), `semantic-search-blob-${id}.upload`);
+  const headers: Record<string, string> = {};
+  const blobToken = process.env.BLOB_READ_WRITE_TOKEN;
+  if (isPrivateBlob(url)) {
+    if (!blobToken) {
+      return NextResponse.json(
+        {
+          error:
+            "This blob is private but BLOB_READ_WRITE_TOKEN is not configured for the function. Make the blob public or set the token."
+        },
+        { status: 500 }
+      );
+    }
+    headers.Authorization = `Bearer ${blobToken}`;
+  }
 
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { headers, cache: "no-store" });
     if (!res.ok || !res.body) {
-      return NextResponse.json({ error: `Download failed (${res.status}).` }, { status: 400 });
+      return NextResponse.json(
+        { error: `Download failed (${res.status}). Verify the blob URL and BLOB_READ_WRITE_TOKEN.` },
+        { status: 400 }
+      );
     }
-    const webBody = res.body;
-    await pipeline(Readable.fromWeb(webBody as import("stream/web").ReadableStream), createWriteStream(filePath));
+    const lower = filename.toLowerCase();
+    if (lower.endsWith(".json") || lower.endsWith(".jsonl") || lower.endsWith(".ndjson")) {
+      return NextResponse.json(
+        {
+          error:
+            "Streaming JSON/JSONL ingest from Blob is not supported on Vercel yet (only CSV/TSV). Convert to CSV or upload a smaller .json directly."
+        },
+        { status: 400 }
+      );
+    }
 
+    const nodeStream = Readable.fromWeb(res.body as import("stream/web").ReadableStream);
     const summary = await enqueueIngest(async () => {
       const engine = getEngine();
-      return indexFromUploadedFile(filePath, filename, engine);
+      return indexFromCsvStream(nodeStream, filename, engine);
     });
+
+    let snapshotUrl: string | null = null;
+    try {
+      const engine = getEngine();
+      snapshotUrl = await saveSnapshotToBlob(engine.getDocuments());
+      markEngineHydrated();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "snapshot failed";
+      // Snapshot failure should not invalidate the in-memory index for this lambda,
+      // but we surface it so cross-instance search will be flagged as broken.
+      return NextResponse.json({
+        ok: true,
+        indexed: summary.indexed,
+        truncated: summary.truncated,
+        warning: `${summary.warning ?? ""} Index built in memory, but persisting to Blob failed: ${message}. Search may not work on a different lambda.`.trim()
+      });
+    }
 
     return NextResponse.json({
       ok: true,
       indexed: summary.indexed,
       truncated: summary.truncated,
-      warning: summary.warning
+      warning: summary.warning,
+      snapshot: snapshotUrl
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Ingest failed";
     return NextResponse.json({ error: message }, { status: 400 });
-  } finally {
-    await unlink(filePath).catch(() => {});
   }
 }

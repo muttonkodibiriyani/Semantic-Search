@@ -44,4 +44,9 @@ export class SemanticSearchEngine {
   get documentCount(): number {
     return this.index.size;
   }
+
+  /** Snapshot the raw indexed documents (used for serializing the index for cross-lambda persistence). */
+  getDocuments(): IndexedDocument[] {
+    return this.index.getDocuments();
+  }
 }

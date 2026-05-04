@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { csvToDocuments, jsonToDocuments } from "@/lib/ingest";
 import { getEngine } from "@/lib/engine-store";
+import { saveSnapshotToBlob, markEngineHydrated } from "@/lib/index-snapshot";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 /** Above this size the UI must use chunked upload (init → chunk → complete). */
 const MAX_SINGLE_REQUEST_BYTES = 4 * 1024 * 1024;
@@ -36,7 +38,16 @@ export async function POST(req: Request) {
       engine.replaceDocuments(docs);
       count = docs.length;
     }
-    return NextResponse.json({ ok: true, indexed: count });
+    let warning: string | undefined;
+    try {
+      const engine = getEngine();
+      await saveSnapshotToBlob(engine.getDocuments());
+      markEngineHydrated();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "snapshot failed";
+      warning = `Index built in memory, but persisting snapshot to Blob failed: ${message}.`;
+    }
+    return NextResponse.json({ ok: true, indexed: count, warning });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Ingest failed";
     return NextResponse.json({ error: message }, { status: 400 });
