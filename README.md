@@ -32,6 +32,16 @@ Put it **anywhere on disk** (Downloads, `D:\data\`, etc.). In the browser, use *
 
 Strong production systems usually combine **embedding models** + **vector databases** + **reranking**. This project is a clear, auditable **lexical** baseline (TF–IDF) that runs **without** paid LLM credits and is a solid stepping stone—not a claim to beat every hosted semantic stack in the world.
 
+## Merging without review (this repo only)
+
+GitHub **does not** let a workflow use the default `GITHUB_TOKEN` to post an approving **PR review** on the same repo (that would defeat the review model). To allow **merge without human review** for *only* [Semantic-Search](https://github.com/muttonkodibiriyani/Semantic-Search):
+
+1. On GitHub: **Settings → Rules → Rulesets** (or **Branches → Branch protection rules** on `main`).
+2. Either **do not** enable “Require pull request reviews”, or set **Required approvals** to **0**.
+3. Optionally turn on **Allow auto-merge** so merges go through as soon as required checks (e.g. the **CI** workflow) pass.
+
+Using a personal access token in Actions to auto-approve every PR is possible but is a **security risk** and is not configured here.
+
 ## Paperclip
 
 See `PAPERCLIP.md` for agent/workspace notes.
