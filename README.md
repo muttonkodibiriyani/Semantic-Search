@@ -68,12 +68,41 @@ The server streams the blob (with the project's `BLOB_READ_WRITE_TOKEN` for **pr
 
 ### Row cap on Vercel — `SEMANTIC_SEARCH_MAX_ROWS`
 
-The TF–IDF engine is held in lambda memory; on **Hobby** the function has ~300 s and limited RAM. To stay within those limits when ingesting a large catalog, the app applies a default cap of **25,000 rows** when `VERCEL=1`. To change it:
+The BM25 engine is held in lambda memory; on **Hobby** the function has ~300 s and ~1 GB RAM. To stay within those limits when ingesting a large catalog, the app applies a default cap of **100,000 rows** when `VERCEL=1`. Empirically on a 987 MB PIM-style CSV:
 
-- Vercel → **Settings → Environment Variables** → add `SEMANTIC_SEARCH_MAX_ROWS` (production + preview).
-- Set it to a positive integer (e.g. `60000`); leave empty/`0` only when running locally where memory and time are unconstrained. Larger values may exceed function memory and time limits.
+| Rows | Ingest time | Snapshot (gzip) | Status |
+|---|---|---|---|
+| 30,000 | ~17 s | ~12 MB | comfortable |
+| 60,000 | ~36 s | ~25 MB | recommended |
+| 100,000 | timed out / OOM | — | requires Pro plan or more memory |
 
-A truncated index is reported in the ingest response's `warning` field and surfaced in the UI message after indexing.
+Set the env var in Vercel → **Settings → Environment Variables**:
+
+- `SEMANTIC_SEARCH_MAX_ROWS=60000` — proven sweet spot on Hobby
+- empty or `0` — no cap (only safe locally, or on Pro with extra memory)
+
+A truncated index is reported in the ingest response's `warning` field and surfaced in the UI.
+
+### Hobby Blob storage budget (1 GB total)
+
+Vercel Blob's free tier has a 1 GB ceiling. A 987 MB CSV plus a gzipped index snapshot will blow through that. The app saves the snapshot at `_semantic-search/index-snapshot.json.gz` (gzip-compressed JSON of the full product documents), which is ~25 MB at 60,000 rows. If the snapshot save fails because of `Storage quota exceeded`, free space by either:
+
+- Clicking **Delete from Blob** in the UI to remove the source CSV after a successful ingest (the catalog data lives in the snapshot now), or
+- Calling `POST /api/admin/free-blob` with `{ "pathname": "<your-csv>" }` from the CLI.
+
+Re-uploading the CSV is only required when you want to re-index with a different `SEMANTIC_SEARCH_MAX_ROWS`.
+
+### Why the search results are different now (BM25 + facets)
+
+The retriever is no longer plain TF–IDF cosine. It now does what OpenSearch and the AWS DocumentDB-on-OpenSearch blog describe as the **lexical** stage of a hybrid pipeline, in process:
+
+1. **Query understanding** parses the natural-language query into structured facets (`gender`, `category`, `color`, `priceMax`) plus the residual tokens. Categories are mutually exclusive, so a query for `shoes` does **not** match `sandals`, `slippers`, or `boots`.
+2. **Per-row facets** are derived during ingest from PIM fields (`HNMDefault~customerGroup`, `HNMDefault~color`, name keywords, prices) and stored in `meta._facet_*`.
+3. **Hard filter** narrows the candidate pool to documents that satisfy every detected facet, so `men red shoes` cannot return women's dresses ever again.
+4. **BM25 ranking** (`k1=1.2`, `b=0.75`) over the candidate pool with field weights `title × 5`, `description × 1`, `attributes × 0.5`.
+5. **Calibrated 0–1 score** combines `0.45 · term coverage + 0.35 · normalized BM25 + 0.20 · facet alignment`. A score of `1.000` means the top hit covered every query token in fields it appears in and matched every detected facet.
+
+Empty result pools (e.g. `men red shoes`) mean no row in the indexed slice satisfies all detected facets — the engine deliberately returns nothing rather than smuggle in the wrong category. To upgrade to true neural semantic search (cross-language synonyms, paraphrase tolerance) the next step is to embed the catalog with a model (OpenAI `text-embedding-3-small`, AWS Bedrock Titan, etc.) and store vectors in **Upstash Vector**, **Pinecone**, **OpenSearch k-NN**, or **Postgres + pgvector** — the architecture described in the AWS DocumentDB + OpenSearch blog you linked.
 
 ## Public “weblink” for your manager
 
