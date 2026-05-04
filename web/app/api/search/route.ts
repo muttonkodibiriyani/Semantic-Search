@@ -57,8 +57,21 @@ export async function GET(req: Request) {
     });
   }
 
-  const out = engine.search(q, topK);
-  const results = out.results.map((h) => {
+  // Pull a wider candidate set from the engine so we can collapse SKU-level
+  // variants (different sizes/seasons of the same style) into one result and
+  // still hand back `topK` distinct products to the UI.
+  const overFetchK = Math.min(200, topK * 4);
+  const out = engine.search(q, overFetchK);
+  const seenStyles = new Set<string>();
+  const distinct = [];
+  for (const h of out.results) {
+    const styleKey = h.document.styleCode || h.document.id;
+    if (seenStyles.has(styleKey)) continue;
+    seenStyles.add(styleKey);
+    distinct.push(h);
+    if (distinct.length >= topK) break;
+  }
+  const results = distinct.map((h) => {
     const meta = h.document.meta ?? {};
     const label = h.document.title || meta.Name || meta.name || h.document.id;
     const snippet =
