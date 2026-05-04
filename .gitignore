@@ -1,0 +1,37 @@
+# Dependencies
+**/node_modules/
+
+# Next.js
+**/.next/
+**/out/
+
+# SDK build output (rebuilt via npm run build)
+sdk/dist/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+!web/.env.example
+
+# --- Data protection: do not commit customer or internal catalogs ---
+*.csv
+*.tsv
+*.ndjson
+*.jsonl
+# Only the tiny synthetic demo shipped with the app (not real business data)
+!web/public/demo/sample-products.csv
+
+# Local uploads / temp
+uploads/
+tmp/
+*.upload
+**/semantic-search-*.upload
+
+# Logs & OS
+*.log
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
