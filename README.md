@@ -25,10 +25,16 @@ That response means the **hostname is not attached to a successful deployment** 
 | Cause | What to do |
 |--------|------------|
 | **Root Directory** was not set to **`web`** | Fix it in **Settings → General**, then **Redeploy** the latest commit. |
-| You opened an old **preview** URL (often contains a random word such as `ivory` in the subdomain) | Use the **Production** domain shown on the project overview (e.g. `https://semantic-search-<team>.vercel.app`), not a one-off preview link from an older deployment. |
+| You bookmarked a **preview** hostname (often looks like `semantic-search-ivory.vercel.app` — a random word before `.vercel.app`) | That URL is **not** your stable production domain. When that preview is replaced or garbage‑collected, Vercel returns **NOT_FOUND** forever for that hostname. Open **Vercel → your project → Settings → Domains** and use the **Production** domain (pattern `https://<project-name>-<team-slug>.vercel.app`). |
 | Latest deployment **failed** or was **canceled** | Open **Deployments →** select the failed build → **Build Logs** and fix the error (missing env, install failure, etc.). |
 
 After changing **Root Directory**, you must trigger a **new deployment** (Redeploy or push a commit); old deployment URLs may keep returning NOT_FOUND.
+
+### Browser shows `401 Unauthorized` on the real `*.vercel.app` URL
+
+That usually means **Deployment Protection** is on (Vercel Authentication, password, etc.), so the deployment exists but strangers cannot open it. See [Deployment Protection](https://vercel.com/docs/deployments/deployment-protection).
+
+For a **public** demo: **Settings → Deployment Protection** and either disable protection for **Production**, or set **Standard Protection** so only previews are protected (pick the option that matches your org policy). Then reload the **production** domain from **Settings → Domains** (not an old `*-ivory-*` preview link).
 
 Optional env (in Vercel → Project → Settings → Environment Variables):
 
