@@ -10,10 +10,34 @@ Offline-capable **TF–IDF** product search: TypeScript SDK (`sdk/`) and a **Nex
 - This repo’s `.gitignore` blocks typical catalog extensions; only the tiny **synthetic** demo under `web/public/demo/sample-products.csv` is allowed.
 - For a **manager demo with real data**: run the app **locally** or on **your** controlled host, keep the CSV **outside** the repo (e.g. `D:\catalogs\products.csv`), and upload through the UI—or use a short‑lived tunnel (e.g. ngrok) to your laptop, not a public upload of the raw file to a third party.
 
+## Deploy on Vercel (new project)
+
+1. Push this repo to GitHub (default branch `main`).
+2. Open [vercel.com/new](https://vercel.com/new) → **Import** the **Semantic-Search** repository.
+3. **Critical:** under **Root Directory**, click **Edit** and set it to **`web`** (not the repo root). Framework should stay **Next.js**.
+4. **Build & Install** — leave defaults (`npm run build` / `npm install`). The `web` app’s `prebuild` script compiles the sibling `sdk/` package automatically.
+5. **Deploy.** Open the production URL (e.g. `https://<project>.vercel.app`). Use **Load demo catalog** for an instant smoke test; large CSV uploads may hit serverless time/size limits on free tiers.
+
+Optional env (in Vercel → Project → Settings → Environment Variables):
+
+- `NEXT_PUBLIC_PRODUCT_URL_BASE` — e.g. `https://ae.hm.com/en/buy` for demo PDP links.
+
 ## Public “weblink” for your manager
 
-1. **Quick demo (no real data):** Deploy to [Vercel](https://vercel.com) from this repo. In the project settings set **Root Directory** to `web`. After deploy, open the `.vercel.app` URL and click **“Load safe demo catalog”** on the home page, then search.
-2. **Real large CSV:** Vercel and similar serverless hosts have **tight time and memory limits**; multi‑GB indexing is not realistic there. For that case, run `npm run dev` on a machine with enough RAM, optionally `NODE_OPTIONS=--max-old-space-size=16384`, and share access via **VPN** or a **temporary tunnel** to that machine—not by committing the CSV.
+1. **Quick demo:** After the Vercel steps above, open your `.vercel.app` URL and use **Load demo catalog**, then search.
+2. **Real large CSV:** Vercel has **tight time and memory limits**; multi‑GB indexing is often not realistic there. For huge files, run `npm run dev` locally (with more heap if needed) or use a VM you control—not a public git push of the CSV.
+
+## Troubleshooting: `Cannot find module './611.js'`
+
+That usually means a **stale or mismatched** `.next` folder (often after moving the repo or changing `next.config`). From the `web` folder run:
+
+```bash
+npm run clean
+npm install
+npm run dev
+```
+
+On Windows PowerShell you can use `npm run dev:clean` (clean + dev). Always use **Root Directory = `web`** on Vercel so `outputFileTracingRoot` matches this repo layout.
 
 ## Local run
 
