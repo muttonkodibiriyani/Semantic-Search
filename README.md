@@ -51,6 +51,30 @@ Chunked upload stores session metadata in `/tmp`, but **each serverless invocati
 
 Without Blob, use **`npm run dev`** locally for large CSVs, or keep files under **4MB** for single `POST /api/ingest`.
 
+### Index a CSV that is **already** in your Blob store (no re-upload)
+
+If the file is already uploaded to this project's Blob store (via dashboard, the SDK, or a previous browser upload), you can index it directly without re-uploading from your machine.
+
+- In the UI, the panel **“Index a file already in Vercel Blob”** appears whenever the project lists at least one `.csv` / `.tsv` blob. Pick the file and click **Index this blob**.
+- Programmatically:
+
+  ```bash
+  curl -sS -X POST "$BASE/api/ingest/from-blob-pathname" \
+    -H "Content-Type: application/json" \
+    -d '{"pathname":"<pathname-from-/api/ingest/blobs>"}'
+  ```
+
+The server streams the blob (with the project's `BLOB_READ_WRITE_TOKEN` for **private** stores), parses it without staging on `/tmp`, builds the in-memory TF–IDF index, and persists a snapshot at `_semantic-search/index-snapshot.json` in the same Blob store. `/api/search` and `/api/stats` lazily hydrate that snapshot on cold lambdas, so search keeps working across invocations.
+
+### Row cap on Vercel — `SEMANTIC_SEARCH_MAX_ROWS`
+
+The TF–IDF engine is held in lambda memory; on **Hobby** the function has ~300 s and limited RAM. To stay within those limits when ingesting a large catalog, the app applies a default cap of **25,000 rows** when `VERCEL=1`. To change it:
+
+- Vercel → **Settings → Environment Variables** → add `SEMANTIC_SEARCH_MAX_ROWS` (production + preview).
+- Set it to a positive integer (e.g. `60000`); leave empty/`0` only when running locally where memory and time are unconstrained. Larger values may exceed function memory and time limits.
+
+A truncated index is reported in the ingest response's `warning` field and surfaced in the UI message after indexing.
+
 ## Public “weblink” for your manager
 
 1. **Quick demo:** After the Vercel steps above, open your `.vercel.app` URL and use **Load demo catalog**, then search.
