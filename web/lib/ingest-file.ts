@@ -3,19 +3,21 @@ import { readFile, stat } from "fs/promises";
 import { createInterface } from "readline";
 import type { Readable } from "stream";
 import { parse } from "csv-parse";
-import type { SemanticSearchEngine } from "semantic-search-sdk";
-import { jsonToDocuments, recordToIndexedDocument } from "./ingest";
+import type { ProductSearchEngine } from "./product-engine";
+import { jsonToDocuments, recordToProductDocument } from "./ingest";
 
-const BATCH = 8000;
+const BATCH = 4000;
 /** Single JSON array uploads above this size must use JSON Lines (.jsonl) instead. */
 const MAX_WHOLE_JSON_BYTES = 80 * 1024 * 1024;
 
 /**
- * Default cap on indexed rows when running on Vercel. TF-IDF in-memory + 300s/Hobby
- * limits will fail on multi-million-row catalogs. Set SEMANTIC_SEARCH_MAX_ROWS to
- * override (or to "0"/empty to remove the cap, which is only safe locally).
+ * Default cap on indexed rows when running on Vercel. The BM25 engine + the
+ * structured facet indexes hold every doc in lambda RAM, so multi-million-row
+ * catalogs will OOM on Hobby. Set SEMANTIC_SEARCH_MAX_ROWS to override (set
+ * empty/`0` to remove the cap entirely, which is only safe locally or on a
+ * Pro plan with extra memory).
  */
-const VERCEL_DEFAULT_MAX_ROWS = 25_000;
+const VERCEL_DEFAULT_MAX_ROWS = 100_000;
 
 function getMaxRows(): number | undefined {
   const v = process.env.SEMANTIC_SEARCH_MAX_ROWS;
@@ -36,7 +38,7 @@ function delimiterForFilename(filename: string): string {
 async function indexCsvFromReadable(
   source: Readable,
   filename: string,
-  engine: SemanticSearchEngine,
+  engine: ProductSearchEngine,
   maxRows: number | undefined,
   onProgress?: (indexed: number) => void
 ): Promise<{ indexed: number; truncated: boolean }> {
@@ -56,7 +58,7 @@ async function indexCsvFromReadable(
 
   let indexed = 0;
   let truncated = false;
-  const batch: ReturnType<typeof recordToIndexedDocument>[] = [];
+  const batch: ReturnType<typeof recordToProductDocument>[] = [];
 
   try {
     for await (const row of parser) {
@@ -65,7 +67,7 @@ async function indexCsvFromReadable(
         break;
       }
       const record = row as Record<string, unknown>;
-      batch.push(recordToIndexedDocument(record, indexed + 1));
+      batch.push(recordToProductDocument(record, indexed + 1));
       indexed++;
       if (batch.length >= BATCH) {
         engine.appendBatch(batch);
@@ -87,7 +89,7 @@ async function indexCsvFromReadable(
 async function indexCsvStream(
   filePath: string,
   filename: string,
-  engine: SemanticSearchEngine,
+  engine: ProductSearchEngine,
   maxRows: number | undefined,
   onProgress?: (indexed: number) => void
 ): Promise<{ indexed: number; truncated: boolean }> {
@@ -97,7 +99,7 @@ async function indexCsvStream(
 
 async function indexJsonlStream(
   filePath: string,
-  engine: SemanticSearchEngine,
+  engine: ProductSearchEngine,
   maxRows: number | undefined,
   onProgress?: (indexed: number) => void
 ): Promise<{ indexed: number; truncated: boolean }> {
@@ -108,7 +110,7 @@ async function indexJsonlStream(
 
   let indexed = 0;
   let truncated = false;
-  const batch: ReturnType<typeof recordToIndexedDocument>[] = [];
+  const batch: ReturnType<typeof recordToProductDocument>[] = [];
 
   for await (const line of rl) {
     const t = line.trim();
@@ -124,7 +126,7 @@ async function indexJsonlStream(
       continue;
     }
     if (o == null || typeof o !== "object") continue;
-    batch.push(recordToIndexedDocument(o as Record<string, unknown>, indexed + 1));
+    batch.push(recordToProductDocument(o as Record<string, unknown>, indexed + 1));
     indexed++;
     if (batch.length >= BATCH) {
       engine.appendBatch(batch);
@@ -147,7 +149,7 @@ function truncatedWarning(maxRows: number | undefined): string {
 export async function indexFromUploadedFile(
   filePath: string,
   filename: string,
-  engine: SemanticSearchEngine,
+  engine: ProductSearchEngine,
   onProgress?: (indexed: number) => void
 ): Promise<{ indexed: number; truncated: boolean; warning?: string }> {
   const maxRows = getMaxRows();
@@ -213,7 +215,7 @@ export async function indexFromUploadedFile(
 export async function indexFromCsvStream(
   source: Readable,
   filename: string,
-  engine: SemanticSearchEngine,
+  engine: ProductSearchEngine,
   onProgress?: (indexed: number) => void
 ): Promise<{ indexed: number; truncated: boolean; warning?: string }> {
   const maxRows = getMaxRows();

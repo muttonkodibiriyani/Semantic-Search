@@ -1,11 +1,15 @@
-import type { IndexedDocument } from "semantic-search-sdk";
 import { head, put, del } from "@vercel/blob";
-import { getEngine } from "@/lib/engine-store";
+import type { ProductDocument } from "./product-engine";
+import { getEngine } from "./engine-store";
 
 /**
  * Stable Blob pathname under which we persist the in-memory index so the
  * search lambda can hydrate the engine on a cold start (in-memory state in
  * `globalThis` is per-instance only on Vercel).
+ *
+ * v2 snapshots include the structured product document shape used by the
+ * BM25 + facet-filter engine. v1 snapshots (TF-IDF era) are ignored — a
+ * fresh ingest will overwrite them.
  */
 export const SNAPSHOT_PATHNAME = "_semantic-search/index-snapshot.json";
 
@@ -14,31 +18,26 @@ const g = globalThis as unknown as {
   __semanticSearchHydrated?: boolean;
 };
 
-type SnapshotPayload = {
-  v: 1;
+type SnapshotPayloadV2 = {
+  v: 2;
   createdAt: string;
-  documents: IndexedDocument[];
+  documents: ProductDocument[];
 };
 
 function blobToken(): string | undefined {
   return process.env.BLOB_READ_WRITE_TOKEN;
 }
 
-/**
- * The Blob store on this project is configured with private access. v2 of
- * `@vercel/blob` requires `access` to match the store; we only set it
- * conditionally so this also works on public stores.
- */
 function snapshotAccess(): "public" | "private" {
   const v = (process.env.BLOB_STORE_ACCESS || "private").toLowerCase();
   return v === "public" ? "public" : "private";
 }
 
-export async function saveSnapshotToBlob(documents: IndexedDocument[]): Promise<string | null> {
+export async function saveSnapshotToBlob(documents: ProductDocument[]): Promise<string | null> {
   const token = blobToken();
   if (!token) return null;
-  const payload: SnapshotPayload = {
-    v: 1,
+  const payload: SnapshotPayloadV2 = {
+    v: 2,
     createdAt: new Date().toISOString(),
     documents
   };
@@ -81,14 +80,19 @@ export async function hydrateEngineFromBlob(): Promise<number> {
         g.__semanticSearchHydrated = true;
         return 0;
       }
-      // Private store URLs require Authorization on direct fetch.
       const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
       const res = await fetch(url, { cache: "no-store", headers });
       if (!res.ok) {
         g.__semanticSearchHydrated = true;
         return 0;
       }
-      const data = (await res.json()) as SnapshotPayload;
+      const data = (await res.json()) as Partial<SnapshotPayloadV2> & { v?: number };
+      if (data?.v !== 2) {
+        // Old TF-IDF snapshot — incompatible with the BM25 engine. Ignore;
+        // the next ingest will overwrite it.
+        g.__semanticSearchHydrated = true;
+        return 0;
+      }
       const docs = Array.isArray(data?.documents) ? data.documents : [];
       if (docs.length === 0) {
         g.__semanticSearchHydrated = true;

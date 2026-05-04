@@ -1,8 +1,6 @@
-import type { IndexedDocument } from "semantic-search-sdk";
 import { parse } from "csv-parse/sync";
-
-/** Stronger recall for product name in TF–IDF. */
-const TITLE_WEIGHT = 3;
+import type { ProductDocument } from "./product-engine";
+import { deriveFacets } from "./product-facets";
 
 /** Split PIM "Image Links" cell (URLs separated by comma before next http). */
 export function parseImageLinks(raw: string): string[] {
@@ -29,8 +27,12 @@ function roughMaterialTokens(jsonish: string): string {
     .trim();
 }
 
-/** Map a header → value row into an indexed product document (PIM / Namshi-style export aware). */
-export function recordToIndexedDocument(record: Record<string, unknown>, rowIndex: number): IndexedDocument {
+/**
+ * Map one PIM-style row into a `ProductDocument` with separate title /
+ * description / attributes fields and pre-derived structured facets
+ * (gender / category / color / price). The new BM25 ranker uses these.
+ */
+export function recordToProductDocument(record: Record<string, unknown>, rowIndex: number): ProductDocument {
   const s = (v: unknown) => (v == null ? "" : String(v).trim());
   const keys = Object.keys(record);
   const get = (...names: string[]) => {
@@ -54,7 +56,7 @@ export function recordToIndexedDocument(record: Record<string, unknown>, rowInde
 
   const name = get("name") || get("name (ar)");
   const nameAr = get("name (ar)");
-  const desc = get("long description") || get("long description (ar)");
+  const desc = get("long description");
   const descAr = get("long description (ar)");
   const color = get("hnmdefault~color", "color");
   const size = get("hnmdefault~size", "size");
@@ -73,24 +75,22 @@ export function recordToIndexedDocument(record: Record<string, unknown>, rowInde
   const slug = slugifyProductName(name || sku || "product");
   const productUrl = base && slug ? `${base}-${slug}` : "";
 
-  const titles = Array(TITLE_WEIGHT).fill(name).filter(Boolean) as string[];
-  const text = [
-    ...titles,
-    nameAr,
-    desc,
-    descAr,
+  // Build the three field bags. Title gets the strongest weight in BM25 so we
+  // *do not* pad it with non-name content.
+  const title = [name, nameAr].filter(Boolean).join(" — ");
+  const description = [desc, descAr].filter(Boolean).join("\n");
+  const attributes = [
+    color,
+    size,
+    customerGroup,
+    country,
+    seasonCode,
     styleCode,
     articleNumber,
     sku,
-    color,
-    size,
-    seasonCode,
-    customerGroup,
-    country,
-    priceAe,
-    priceSa,
-    matTokens,
-    imageUrls.length ? `images ${imageUrls.length}` : ""
+    priceAe ? `price ${priceAe} aed` : "",
+    priceSa ? `price ${priceSa} sar` : "",
+    matTokens
   ]
     .filter(Boolean)
     .join("\n");
@@ -109,11 +109,33 @@ export function recordToIndexedDocument(record: Record<string, unknown>, rowInde
   if (styleCode) meta.parentStyleCode = styleCode;
   if (articleNumber) meta.articleNumber = articleNumber;
 
-  return { id, text: text || Object.values(meta).join("\n"), meta };
+  const facets = deriveFacets(record, name);
+  if (facets.gender) meta._facet_gender = facets.gender;
+  if (facets.category) meta._facet_category = facets.category;
+  if (facets.color) meta._facet_color = facets.color;
+  if (facets.customerGroup) meta._facet_customerGroup = facets.customerGroup;
+  if (facets.price != null) meta._facet_price = String(facets.price);
+
+  return {
+    id,
+    title: title || sku || `row-${rowIndex}`,
+    description,
+    attributes,
+    meta,
+    gender: facets.gender,
+    category: facets.category,
+    color: facets.color,
+    customerGroup: facets.customerGroup,
+    price: facets.price,
+    primaryImage: primaryImage || undefined,
+    productUrl: productUrl || undefined,
+    styleCode: styleCode || undefined,
+    articleNumber: articleNumber || undefined
+  };
 }
 
-/** Robust CSV → rows (handles quoted fields with JSON/commas inside). */
-export function csvToDocuments(csv: string): IndexedDocument[] {
+/** Robust CSV → product rows (handles quoted fields with JSON/commas inside). */
+export function csvToDocuments(csv: string): ProductDocument[] {
   const records = parse(csv, {
     columns: true,
     relax_column_count: true,
@@ -124,19 +146,19 @@ export function csvToDocuments(csv: string): IndexedDocument[] {
     escape: '"',
     relax_quotes: true
   }) as Record<string, unknown>[];
-  return records.map((row, i) => recordToIndexedDocument(row, i + 1));
+  return records.map((row, i) => recordToProductDocument(row, i + 1));
 }
 
-export function jsonToDocuments(raw: string): IndexedDocument[] {
+export function jsonToDocuments(raw: string): ProductDocument[] {
   const data = JSON.parse(raw) as unknown;
   if (!Array.isArray(data)) return [];
-  const docs: IndexedDocument[] = [];
+  const docs: ProductDocument[] = [];
   let i = 0;
   for (const item of data) {
     i++;
     if (item == null || typeof item !== "object") continue;
     const o = item as Record<string, unknown>;
-    docs.push(recordToIndexedDocument(o, i));
+    docs.push(recordToProductDocument(o, i));
   }
   return docs;
 }

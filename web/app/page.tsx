@@ -5,6 +5,15 @@ import { useCallback, useEffect, useState } from "react";
 const MAX_SINGLE_UPLOAD_BYTES = 4 * 1024 * 1024;
 const CHUNK_SIZE = 4 * 1024 * 1024;
 
+type HitDiagnostics = {
+  bm25: number;
+  bm25Norm: number;
+  coverage: number;
+  facetMatch: number;
+  matchedTerms: string[];
+  matchedFacets: string[];
+};
+
 type Hit = {
   id: string;
   score: number;
@@ -13,13 +22,21 @@ type Hit = {
   primaryImage?: string;
   productUrl?: string;
   styleCode?: string;
+  gender?: string;
+  category?: string;
+  categoryLabel?: string;
+  color?: string;
+  customerGroup?: string;
+  price?: number;
+  diagnostics?: HitDiagnostics;
   meta: Record<string, string>;
 };
 
 type Pipeline = {
   query: string;
-  queryTokens: string[];
+  intent: string;
   indexedDocuments: number;
+  candidatePool: number;
   stages: { key: string; label: string; detail: string }[];
 };
 
@@ -396,8 +413,8 @@ export default function HomePage() {
             </div>
             <div className="status-line" style={{ marginTop: "0.5rem", color: "#6b7280" }}>
               The server streams the blob and builds the index without re-uploading from your machine. On Vercel
-              Hobby the index is capped to <code>SEMANTIC_SEARCH_MAX_ROWS</code> (default 25,000 rows) to fit
-              within memory and 300s function limits — set the env var to raise it.
+              Hobby the index is capped to <code>SEMANTIC_SEARCH_MAX_ROWS</code> (default 100,000 rows) to fit
+              within memory and 300s function limits — raise the env var if your function has more memory.
             </div>
           </div>
         ) : null}
@@ -455,6 +472,13 @@ export default function HomePage() {
         {pipeline && (query.trim() || pipeline.indexedDocuments > 0) ? (
           <div className="pipeline">
             <h3>Retrieval pipeline (5 stages)</h3>
+            {pipeline.intent ? (
+              <p className="status-line" style={{ marginTop: 0 }}>
+                <strong>Detected intent:</strong> {pipeline.intent} ·{" "}
+                <strong>candidates:</strong> {pipeline.candidatePool.toLocaleString()} of{" "}
+                {pipeline.indexedDocuments.toLocaleString()}
+              </p>
+            ) : null}
             <ol>
               {pipeline.stages.map((s) => (
                 <li key={s.key}>
@@ -471,58 +495,96 @@ export default function HomePage() {
         <section className="panel">
           <h2>4 · Results</h2>
           <ul className="results">
-            {results.map((r, idx) => (
-              <li key={`${r.id}-${idx}`} className="result-row">
-                {r.primaryImage || r.meta?.primaryImage ? (
-                  <img
-                    className="thumb"
-                    src={r.primaryImage || r.meta.primaryImage}
-                    alt=""
-                    width={80}
-                    height={80}
-                    loading="lazy"
-                  />
-                ) : null}
-                <div className="result-body">
-                  <div className="title">{r.label || r.id}</div>
-                  <span className="idmuted">SKU {r.id}</span>
-                  {r.styleCode || r.meta?.parentStyleCode ? (
-                    <span className="idmuted"> · Style {r.styleCode || r.meta.parentStyleCode}</span>
+            {results.map((r, idx) => {
+              const facetBadges: string[] = [];
+              if (r.gender) facetBadges.push(r.gender);
+              if (r.categoryLabel) facetBadges.push(r.categoryLabel);
+              if (r.color) facetBadges.push(r.color);
+              if (r.price != null) facetBadges.push(`AED ${r.price}`);
+              return (
+                <li key={`${r.id}-${idx}`} className="result-row">
+                  {r.primaryImage || r.meta?.primaryImage ? (
+                    <img
+                      className="thumb"
+                      src={r.primaryImage || r.meta.primaryImage}
+                      alt=""
+                      width={80}
+                      height={80}
+                      loading="lazy"
+                    />
                   ) : null}
-                  <span className="score"> · score {r.score.toFixed(4)}</span>
-                  {(r.productUrl || r.meta?.productUrl) && (
-                    <div>
-                      <a className="pdp" href={r.productUrl || r.meta.productUrl} target="_blank" rel="noopener noreferrer">
-                        Open PDP (slug demo)
-                      </a>
-                    </div>
-                  )}
-                  {r.snippet ? <div className="snippet">{r.snippet}</div> : null}
-                  {Object.keys(r.meta).length > 0 && (
-                    <div className="meta">
-                      {Object.entries(r.meta)
-                        .filter(([k]) => !["primaryImage", "secondaryImages", "imageCount", "productUrl"].includes(k))
-                        .slice(0, 6)
-                        .map(([k, v]) => (
-                          <span key={k}>
-                            {k}: {v.length > 100 ? `${v.slice(0, 100)}…` : v}
-                            {" · "}
+                  <div className="result-body">
+                    <div className="title">{r.label || r.id}</div>
+                    <span className="idmuted">SKU {r.id}</span>
+                    {r.styleCode || r.meta?.parentStyleCode ? (
+                      <span className="idmuted"> · Style {r.styleCode || r.meta.parentStyleCode}</span>
+                    ) : null}
+                    <span className="score"> · score {r.score.toFixed(4)}</span>
+                    {facetBadges.length > 0 ? (
+                      <div style={{ marginTop: "0.35rem", display: "flex", gap: "0.35rem", flexWrap: "wrap" }}>
+                        {facetBadges.map((b) => (
+                          <span
+                            key={b}
+                            style={{
+                              fontSize: "0.72rem",
+                              padding: "0.1rem 0.5rem",
+                              borderRadius: 999,
+                              background: "#eef2ff",
+                              color: "#3730a3",
+                              border: "1px solid #e0e7ff"
+                            }}
+                          >
+                            {b}
                           </span>
                         ))}
-                    </div>
-                  )}
-                </div>
-              </li>
-            ))}
+                      </div>
+                    ) : null}
+                    {(r.productUrl || r.meta?.productUrl) && (
+                      <div>
+                        <a className="pdp" href={r.productUrl || r.meta.productUrl} target="_blank" rel="noopener noreferrer">
+                          Open PDP (slug demo)
+                        </a>
+                      </div>
+                    )}
+                    {r.snippet ? <div className="snippet">{r.snippet}</div> : null}
+                    {r.diagnostics ? (
+                      <div className="status-line" style={{ marginTop: "0.35rem", color: "#6b7280", fontSize: "0.78rem" }}>
+                        coverage {(r.diagnostics.coverage * 100).toFixed(0)}% · BM25 norm {(r.diagnostics.bm25Norm * 100).toFixed(0)}% ·
+                        facets {(r.diagnostics.facetMatch * 100).toFixed(0)}%
+                        {r.diagnostics.matchedFacets.length ? ` · matched ${r.diagnostics.matchedFacets.join(", ")}` : ""}
+                      </div>
+                    ) : null}
+                    {Object.keys(r.meta).length > 0 && (
+                      <div className="meta">
+                        {Object.entries(r.meta)
+                          .filter(([k]) =>
+                            !["primaryImage", "secondaryImages", "imageCount", "productUrl"].includes(k) &&
+                            !k.startsWith("_facet_")
+                          )
+                          .slice(0, 6)
+                          .map(([k, v]) => (
+                            <span key={k}>
+                              {k}: {v.length > 100 ? `${v.slice(0, 100)}…` : v}
+                              {" · "}
+                            </span>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}
 
       <p className="disclaimer">
-        <strong>Note:</strong> This demo uses on-device TF–IDF (lexical “semantic” similarity). Hosted platforms like
-        Denser add neural embeddings and a vector database; that path is an upgrade when APIs and budget are
-        available. Arabic and English text are both tokenized after a recent fix — re-upload your CSV if search was
-        empty before.
+        <strong>How this is ranked:</strong> the query is parsed into facets (gender / category / color / price),
+        the catalog is hard-filtered to documents that match those facets, and the survivors are ranked with{" "}
+        <strong>BM25</strong> over weighted title / description / attribute fields. The final 0–1 score combines
+        term coverage, normalized BM25, and facet alignment — so a high score genuinely means the product
+        satisfies your intent. Pure neural embeddings (e.g. OpenSearch k-NN, AWS Bedrock) are an upgrade path when
+        you need cross-language synonymy beyond simple PIM keyword matches.
       </p>
     </div>
   );
