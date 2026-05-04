@@ -22,6 +22,8 @@ Optional env (in Vercel → Project → Settings → Environment Variables):
 
 - `NEXT_PUBLIC_PRODUCT_URL_BASE` — e.g. `https://ae.hm.com/en/buy` for demo PDP links.
 
+`web/vercel.json` sets **up to 300s** for the large ingest **complete** route; on **Hobby** plans Vercel may cap lower (upgrade to **Pro** for long-running indexing, or index huge CSVs locally).
+
 ## Public “weblink” for your manager
 
 1. **Quick demo:** After the Vercel steps above, open your `.vercel.app` URL and use **Load demo catalog**, then search.
