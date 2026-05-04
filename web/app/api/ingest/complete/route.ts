@@ -46,7 +46,7 @@ export async function POST(req: Request) {
       markEngineHydrated();
     } catch (e) {
       const message = e instanceof Error ? e.message : "snapshot failed";
-      extraWarning = `Index built in memory, but persisting snapshot to Blob failed: ${message}.`;
+      extraWarning = `Index built in memory, but persisting snapshot to Blob failed: ${message}. Cross-lambda search may not work.`;
     }
 
     return NextResponse.json({

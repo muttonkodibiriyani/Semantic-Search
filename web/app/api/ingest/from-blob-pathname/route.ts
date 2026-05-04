@@ -81,27 +81,23 @@ export async function POST(req: Request) {
       return indexFromCsvStream(nodeStream, filename, engine);
     });
 
-    let snapshotUrl: string | null = null;
+    let snapshot: { url: string; size: number } | null = null;
+    let snapshotWarning: string | undefined;
     try {
       const engine = getEngine();
-      snapshotUrl = await saveSnapshotToBlob(engine.getDocuments());
+      snapshot = await saveSnapshotToBlob(engine.getDocuments());
       markEngineHydrated();
     } catch (e) {
       const message = e instanceof Error ? e.message : "snapshot failed";
-      return NextResponse.json({
-        ok: true,
-        indexed: summary.indexed,
-        truncated: summary.truncated,
-        warning: `${summary.warning ?? ""} Index built in memory, but persisting snapshot to Blob failed: ${message}.`.trim()
-      });
+      snapshotWarning = `Index built in memory, but persisting snapshot to Blob failed: ${message}. The index will only be available on this lambda; use POST /api/admin/free-blob to delete the source CSV from Blob and free space, then re-ingest to enable cross-lambda search.`;
     }
 
     return NextResponse.json({
       ok: true,
       indexed: summary.indexed,
       truncated: summary.truncated,
-      warning: summary.warning,
-      snapshot: snapshotUrl
+      warning: [summary.warning, snapshotWarning].filter(Boolean).join(" ").trim() || undefined,
+      snapshot: snapshot ? { url: snapshot.url, sizeBytes: snapshot.size } : null
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Ingest failed";

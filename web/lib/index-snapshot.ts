@@ -1,3 +1,4 @@
+import { gunzipSync, gzipSync } from "zlib";
 import { head, put, del } from "@vercel/blob";
 import type { ProductDocument } from "./product-engine";
 import { getEngine } from "./engine-store";
@@ -11,7 +12,7 @@ import { getEngine } from "./engine-store";
  * BM25 + facet-filter engine. v1 snapshots (TF-IDF era) are ignored — a
  * fresh ingest will overwrite them.
  */
-export const SNAPSHOT_PATHNAME = "_semantic-search/index-snapshot.json";
+export const SNAPSHOT_PATHNAME = "_semantic-search/index-snapshot.json.gz";
 
 const g = globalThis as unknown as {
   __semanticSearchHydrating?: Promise<number>;
@@ -33,7 +34,9 @@ function snapshotAccess(): "public" | "private" {
   return v === "public" ? "public" : "private";
 }
 
-export async function saveSnapshotToBlob(documents: ProductDocument[]): Promise<string | null> {
+export async function saveSnapshotToBlob(
+  documents: ProductDocument[]
+): Promise<{ url: string; size: number } | null> {
   const token = blobToken();
   if (!token) return null;
   const payload: SnapshotPayloadV2 = {
@@ -41,16 +44,19 @@ export async function saveSnapshotToBlob(documents: ProductDocument[]): Promise<
     createdAt: new Date().toISOString(),
     documents
   };
-  const body = JSON.stringify(payload);
-  const r = await put(SNAPSHOT_PATHNAME, body, {
+  // gzip cuts the snapshot ~5–10× (PIM JSON has very low entropy with repeated
+  // header keys), which keeps it inside the Hobby Blob quota even when the
+  // raw catalog CSV is also stored.
+  const compressed = gzipSync(Buffer.from(JSON.stringify(payload), "utf8"));
+  const r = await put(SNAPSHOT_PATHNAME, compressed, {
     access: snapshotAccess(),
-    contentType: "application/json",
+    contentType: "application/octet-stream",
     token,
     allowOverwrite: true,
     addRandomSuffix: false,
     cacheControlMaxAge: 0
   });
-  return r.url;
+  return { url: r.url, size: compressed.byteLength };
 }
 
 export async function deleteSnapshotFromBlob(): Promise<void> {
@@ -86,7 +92,15 @@ export async function hydrateEngineFromBlob(): Promise<number> {
         g.__semanticSearchHydrated = true;
         return 0;
       }
-      const data = (await res.json()) as Partial<SnapshotPayloadV2> & { v?: number };
+      const ab = await res.arrayBuffer();
+      let json: string;
+      try {
+        json = gunzipSync(Buffer.from(ab)).toString("utf8");
+      } catch {
+        // Old uncompressed snapshot — try parsing as-is for backwards compat.
+        json = Buffer.from(ab).toString("utf8");
+      }
+      const data = JSON.parse(json) as Partial<SnapshotPayloadV2> & { v?: number };
       if (data?.v !== 2) {
         // Old TF-IDF snapshot — incompatible with the BM25 engine. Ignore;
         // the next ingest will overwrite it.

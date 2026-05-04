@@ -201,6 +201,29 @@ export default function HomePage() {
     return msg;
   };
 
+  const deleteExistingBlob = async (pathname: string) => {
+    if (!pathname) return;
+    if (!window.confirm(`Delete "${pathname}" from this project's Vercel Blob store? This frees space so the index snapshot can be persisted, but you will need to re-upload the CSV to re-index it.`)) return;
+    setError(null);
+    setMessage(null);
+    setUploading(true);
+    try {
+      const res = await fetch("/api/admin/free-blob", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pathname })
+      });
+      const j = (await res.json()) as { ok?: boolean; deleted?: string; error?: string };
+      if (!res.ok) throw new Error(j.error || "Delete failed.");
+      setMessage(`Deleted "${j.deleted}" from Blob.`);
+      await refreshExistingBlobs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const onIndexExisting = async () => {
     if (!pickedBlob) return;
     setError(null);
@@ -409,6 +432,15 @@ export default function HomePage() {
                 disabled={uploading}
               >
                 Refresh list
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => void deleteExistingBlob(pickedBlob)}
+                disabled={uploading || !pickedBlob}
+                style={{ color: "#b91c1c" }}
+              >
+                Delete from Blob
               </button>
             </div>
             <div className="status-line" style={{ marginTop: "0.5rem", color: "#6b7280" }}>

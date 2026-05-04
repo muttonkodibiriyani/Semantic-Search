@@ -94,29 +94,23 @@ export async function POST(req: Request) {
       return indexFromCsvStream(nodeStream, filename, engine);
     });
 
-    let snapshotUrl: string | null = null;
+    let snapshot: { url: string; size: number } | null = null;
+    let snapshotWarning: string | undefined;
     try {
       const engine = getEngine();
-      snapshotUrl = await saveSnapshotToBlob(engine.getDocuments());
+      snapshot = await saveSnapshotToBlob(engine.getDocuments());
       markEngineHydrated();
     } catch (e) {
       const message = e instanceof Error ? e.message : "snapshot failed";
-      // Snapshot failure should not invalidate the in-memory index for this lambda,
-      // but we surface it so cross-instance search will be flagged as broken.
-      return NextResponse.json({
-        ok: true,
-        indexed: summary.indexed,
-        truncated: summary.truncated,
-        warning: `${summary.warning ?? ""} Index built in memory, but persisting to Blob failed: ${message}. Search may not work on a different lambda.`.trim()
-      });
+      snapshotWarning = `Index built in memory, but persisting to Blob failed: ${message}. Search may only work on this lambda until snapshot persistence is restored.`;
     }
 
     return NextResponse.json({
       ok: true,
       indexed: summary.indexed,
       truncated: summary.truncated,
-      warning: summary.warning,
-      snapshot: snapshotUrl
+      warning: [summary.warning, snapshotWarning].filter(Boolean).join(" ").trim() || undefined,
+      snapshot: snapshot ? { url: snapshot.url, sizeBytes: snapshot.size } : null
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Ingest failed";
